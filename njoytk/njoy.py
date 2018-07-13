@@ -292,29 +292,21 @@ class NjoyOutput(pd.DataFrame):
         return NjoyMessages(found)
 
 
-
-def is_allocated(*keys):
-    """
-    Check if keyword arguments are given
-    """
-    def check_allocated(f):
-        def new_f(*args, **kwargs):
-            for k in keys:
-                if k not in kwargs:
-                    logging.error("missing argument '{}'".format(k))
-                    sys.exit()
-                if kwargs[k] is None:
-                    logging.error("empty argument '{}'".format(k))
-                    sys.exit()
-            return f(*args, **kwargs)
-        return new_f
-    return check_allocated
-
-
-
 class Njoy:
+    """ 
+    """
 
-    def __init__(self, **kwargs):
+    def __init__(self,
+                 iopt=1,
+                 err=0.001,
+                 iin=1,
+                 icoh=1,
+                 iform=1,
+                 natom=1,
+                 # ACER
+                 itype=1,
+                 
+                 **kwargs):
 #        self.sab = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sab.csv")
 #        self.wdir = os.path.normpath(wdir)
 #        self.evaluationName = os.path.basename(self.wdir)
@@ -591,7 +583,6 @@ class Njoy:
             kwargs.update({"PENDFIN" : kwargs["PENDFOUT"]})
         return text
 
-    @is_allocated("MAT")
     def _groupr_input(self, nendf, npendf, ngin, ngout, **fileOptions):
         from ..formats.records import write_tab1
         kwargs = dict(dict(vars(self), TEMPS=self.TEMPS, SIG0=self.SIG0), **fileOptions)
@@ -654,7 +645,6 @@ class Njoy:
         text += "0/\n"
         return text
 
-    @is_allocated("MAT", "LFI", "SECTIONS")
     def _errorr_input(self, endfin, pendfin, gendfin, errorrout, **fileOptions):
         from ..formats.records import write_tab1
         kwargs = dict(dict(vars(self), TEMPS=self.TEMPS), **fileOptions)
@@ -789,37 +779,6 @@ errorr
             if filename[:4] == 'tape': os.remove(os.path.join(mydir, filename))
         return DfOutputs, DfMessages
 
-
-    @is_allocated("TAPE", "PENDFTAPE", "TAG")
-    def get_hendf(self, **fileOptions):
-        from ..formats import Endf6
-
-        mydir = os.path.join(self.folder, fileOptions["FILENAME"])
-        os.makedirs(mydir, exist_ok=True)
-
-        print(" --- run hendf for {} ---".format(fileOptions["TAG"]))
-        E = Endf6.from_file(fileOptions["TAPE"])
-        P = Endf6.from_file(fileOptions["PENDFTAPE"]).query("not ((MF==2 & MT == 151) | (MF==1 & MT==451))")
-        E.update(P)
-
-        string = E.write_string()
-        string = string[:103] + '{:>11}'.format(2) + string[114:]
-
-        newfile = os.path.join(mydir, "{}.hendf".format(fileOptions["TAG"]))
-        with open(newfile, 'w') as f: f.write(string)
-
-        DfOutputs = OutputFiles()
-        if os.path.isfile(newfile):
-            if os.path.getsize(newfile) > 0:
-                DfOutputs = DfOutputs.append({"id" : "hendf", "format" : "ENDF", "file" : newfile}, ignore_index=True)
-
-        DfOutputs = DfOutputs.append({"id" : "output_pendf", "format" : "TEXT", "file" : newfile}, ignore_index=True)
-        DfMessages = pd.DataFrame()
-        return DfOutputs, DfMessages
-
-
-
-    @is_allocated("FILENAME", "TAPE", "PENDFTAPE", "TAG")
     def get_gendf(self, **fileOptions):
         mydir = os.path.join(self.folder, fileOptions["FILENAME"])
         os.makedirs(mydir, exist_ok=True)
@@ -859,7 +818,6 @@ errorr
         return DfOutputs, DfMessages
 
 
-    @is_allocated("FILENAME", "TAPE", "TAG")
     def get_errorr(self, **fileOptions):
         mydir = os.path.join(self.folder, fileOptions["FILENAME"])
         os.makedirs(mydir, exist_ok=True)
@@ -954,7 +912,6 @@ errorr
                 cwd=mydir,
                 verbose=True,
                 )
-        sys.exit()
         # Process NJOY outputs
         newfile = os.path.join(mydir, "{}.ace".format(tag))
         if os.path.isfile(newfile): os.remove(newfile)
@@ -973,7 +930,6 @@ errorr
                 if not os.path.isfile(oldfile): continue
                 with open(oldfile) as g:
                     xargs = g.read().split()
-#                    xargs[0] = ".".join([str(int(fileOptions['ZA'] + 300*fileOptions["LISO"])), xargs[0].split('.')[1]])
                     xargs[2] = "{}.ace".format(tag)
                     xargs[3] = "0"
                     lines.append(" ".join(xargs))
@@ -990,103 +946,39 @@ errorr
             if filename[:4] == 'tape': os.remove(os.path.join(mydir, filename))
         return dfout, dferr
 
-
-
-class evalLib(pd.DataFrame):
-
-    @classmethod
-    def from_file(cls, inputfile):
-        """
-        Populate dataframe using each row of a given inputfile.
-        Example of inputfile:
-            ENDF-1  [PENDF-1]
-            ENDF-2  [PENDF-2]
-            ...
-            ENDF-N  [PENDF-2]
-        Values in brackets [] are optional.
-        """
-        lines = open(inputfile).read().splitlines()
-        evals = []
-        for line in lines:
-            groups = line.split() # 0-ENDF [1-PENDF]
-            E = evalFile(groups[0])
-            print("parsing {}".format(groups[0]))
-            if len(groups) > 1:
-                E.pendfFile = os.path.abspath(os.path.realpath(groups[1]))
-            evals.append(E.to_frame())
-        frame = pd.concat(evals, sort=False)
-        return cls(frame)
-
-    def run_njoy(self, **njoyOptions):
-        import multiprocessing as mp
-        nj = Njoy(**njoyOptions)
-        pool = mp.Pool(processes=nj.processes)
-        outs = [pool.apply_async(nj.run, kwds = {**row.to_dict()}) for i,row in self.iterrows()]
-        outs = list(map(lambda x:x.get(), outs))
-        if nj.run_acer:
-            xsdirFiles = [os.path.join(dp, f) for dp, dn, fn in os.walk(os.path.expanduser(nj.evaluationName)) for f in fn if f.endswith(".xsdir")]
-            aceFiles = [os.path.join(dp, f) for dp, dn, fn in os.walk(os.path.expanduser(nj.evaluationName)) for f in fn if f.endswith(".ace")]
-            mydir = os.path.join(nj.evaluationName, "ace")
-            os.makedirs(mydir, exist_ok=True)
-            with open(os.path.join(mydir, os.path.basename(nj.evaluationName)+".xsdir"), 'w') as f:
-                for file in sorted(xsdirFiles):
-                    f.write(open(file).read() + '\n')
-            for file in sorted(aceFiles):
-                shutil.move(file, os.path.join(mydir, os.path.basename(file)))
-
-
-def process_lib():
-    from .. import settings
-    inputs = settings.init_njoy()
-    evalLib.from_file(inputs["inputfile"]).run_njoy(**inputs)
-
-
 def run(iargs=None):
-    from . import from_cli
-    init = from_cli(iargs)
+    init = parser(iargs)
     nj = Njoy(**vars(init))
-
-    tape = Endf6.from_file(nj.TAPE)
-    tape.parse()
-    if "pendftape" in  init: tape.PENDFTAPE = init.pendftape
-    if "gendftape" in  init: tape.GENDFTAPE = init.gendftape
 
     DfOutputs = OutputFiles()
     DfMessages = NjoyMessages()
 
+    options = {"tape" : init.tape}
+    if init.pendftape: options.update({"pendftape" : init.pendftape})
+    if init.gendftape: options.update({"gendftape" : init.pendftape})
+    if init.tag: options.update({"tag" : init.tag})
+    if init.mat: options.update({"mat" : init.mat})
     if init.pendf:
-        outs, msgs = nj.get_pendf(**tape.__dict__)
+        outs, msgs = nj.get_pendf(**options)
         DfOutputs = pd.concat([DfOutputs, outs]).reset_index(drop=True)
         DfMessages = pd.concat([DfMessages, msgs]).reset_index(drop=True)
-    try:
-        tape.PENDFTAPE = DfOutputs.query("id==\"pendf\"").file.iloc[0]
-    except:
-        pass
-
-    if init.hendf:
-        outs, msgs = nj.get_hendf(**tape.__dict__)
-        DfOutputs = pd.concat([DfOutputs, outs]).reset_index(drop=True)
-        DfMessages = pd.concat([DfMessages, msgs]).reset_index(drop=True)
-    try:
-        tape.PENDFTAPE = DfOutputs.query("id==\"pendf\"").file.iloc[0]
-    except:
-        pass
+        options.update({"pendftape" : DfOutputs.query("id==\"pendf\"").file.iloc[0]})
 
     if init.ace:
-        outs, msgs = nj.get_ace(**tape.__dict__)
+        outs, msgs = nj.get_ace(**options)
         DfOutputs = pd.concat([DfOutputs, outs]).reset_index(drop=True)
         DfMessages = pd.concat([DfMessages, msgs]).reset_index(drop=True)
 
-    if init.gendf:
-        outs, msgs = nj.get_gendf(**tape.__dict__)
-        DfOutputs = pd.concat([DfOutputs, outs]).reset_index(drop=True)
-        DfMessages = pd.concat([DfMessages, msgs]).reset_index(drop=True)
-    try:
-        tape.GENDFTAPE = DfOutputs.query("id==\"gendf\"").file.iloc[0]
-    except:
-        pass
-
-    if init.errorr:
-        outs, msgs = nj.get_errorr(**tape.__dict__)
-        DfOutputs = pd.concat([DfOutputs, outs]).reset_index(drop=True)
-        DfMessages = pd.concat([DfMessages, msgs]).reset_index(drop=True)
+#    if init.gendf:
+#        outs, msgs = nj.get_gendf(**tape.__dict__)
+#        DfOutputs = pd.concat([DfOutputs, outs]).reset_index(drop=True)
+#        DfMessages = pd.concat([DfMessages, msgs]).reset_index(drop=True)
+#    try:
+#        tape.GENDFTAPE = DfOutputs.query("id==\"gendf\"").file.iloc[0]
+#    except:
+#        pass
+#
+#    if init.errorr:
+#        outs, msgs = nj.get_errorr(**tape.__dict__)
+#        DfOutputs = pd.concat([DfOutputs, outs]).reset_index(drop=True)
+#        DfMessages = pd.concat([DfMessages, msgs]).reset_index(drop=True)

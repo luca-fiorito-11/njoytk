@@ -28,7 +28,7 @@ def test_pendf(tmpdir):
 @pytest.mark.njoy
 @pytest.mark.ace
 def test_ace_1(tmpdir):
-    nj = Njoy(temps=[293.6], suffixes=[.03], wdir=str(tmpdir))
+    nj = Njoy(temps=[293.6], suffixes=[".03"], wdir=str(tmpdir))
     file = os.path.join(data.__path__[0], r"h1.endf")
     options = {
             "tape" : file,
