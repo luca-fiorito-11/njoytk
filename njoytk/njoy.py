@@ -4,19 +4,215 @@ Created on Fri May 25 16:58:11 2018
 
 @author: fiorito_l
 """
-import pandas as pd
-import numpy as np
+
+__author__ = "Luca Fiorito"
+
 import os
 import sys
 import shutil
 import re
 import logging
-import pytest
 import pdb
+import argparse
 
-from .. import utils
-from ..functions import run_process
-from ..formats import Endf6
+import pandas as pd
+import numpy as np
+
+from njoytk import utils
+
+
+class EmptyIsConst(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        if len(values) == 0:
+            string = option_string.lower()
+            if string == "--temps":
+                values = [293.6]
+            elif string == "--kerma":
+                values = [302, 303, 304, 318, 402, 442, 443, 444, 445, 446, 447]
+            elif string == "--sig0":
+                values = [1E10]
+        setattr(namespace, self.dest, values)
+
+
+def parser(iargs:"list of command line options as string"=None):
+    """Parse command line options.
+    """
+    parser = argparse.ArgumentParser(prog="python -m sandy.njoy",
+                                     formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument('tape',
+                        type=lambda x: utils.is_valid_file(parser, x),
+                        help="ENDF-6 format file")
+    parser.add_argument('-P','--pendftape',
+                        type=lambda x: utils.is_valid_file(parser, x),
+                        default=argparse.SUPPRESS,
+                        metavar="PENDF",
+                        help="processed PENDF format file")
+    parser.add_argument('-G','--gendftape',
+                        type=lambda x: utils.is_valid_file(parser, x),
+                        default=argparse.SUPPRESS,
+                        metavar="GENDF",
+                        help="processed GENDF format file")
+    parser.add_argument('--broadr',
+                        type=utils.str2bool,
+                        default=argparse.SUPPRESS,
+                        metavar=True,
+                        help=argparse.SUPPRESS)
+    parser.add_argument('--purr',
+                        type=utils.str2bool,
+                        default=argparse.SUPPRESS,
+                        metavar=True,
+                        help=argparse.SUPPRESS)
+    parser.add_argument('--unresr',
+                        type=utils.str2bool,
+                        default=argparse.SUPPRESS,
+                        metavar=False,
+                        help=argparse.SUPPRESS)
+    parser.add_argument('--thermr',
+                        type=utils.str2bool,
+                        default=argparse.SUPPRESS,
+                        metavar=True,
+                        help=argparse.SUPPRESS)
+    parser.add_argument('--heatr',
+                        type=utils.str2bool,
+                        default=argparse.SUPPRESS,
+                        metavar=False,
+                        help=argparse.SUPPRESS)
+    parser.add_argument('--acer',
+                        type=utils.str2bool,
+                        default=argparse.SUPPRESS,
+                        metavar=False,
+                        help=argparse.SUPPRESS)
+    parser.add_argument('-p','--pendf',
+                        action="store_true",
+                        help="produce PENDF file")
+    parser.add_argument('-a','--ace',
+                        action="store_true",
+                        help="produce ACE file")
+    parser.add_argument('-g','--gendf',
+                        action="store_true",
+                        help="produce GENDF file")
+    parser.add_argument('-e','--errorr',
+                        action="store_true",
+                        help="produce ERRORR file")
+    parser.add_argument('-H','--hendf',
+                        action="store_true",
+                        help="produce HENDF file")
+#    parser.add_argument('--capsys',
+#                        action="store_true",
+#                        help="capture NJOY stderr and stdout (default=False)")
+    parser.add_argument('--exe',
+                        default=argparse.SUPPRESS,
+                        help="NJOY executable (default=njoy2016).")
+    parser.add_argument('--temps',
+                        type=float,
+                        default=argparse.SUPPRESS,
+                        nargs='+',
+                        help="list of temperature values")
+    parser.add_argument('--sig0',
+                        type=float,
+                        default=argparse.SUPPRESS,
+                        nargs='+',
+                        help="list of dilution values")
+    parser.add_argument('--kerma',
+                        type=int,
+                        action=EmptyIsConst,
+                        default=argparse.SUPPRESS,
+                        nargs='*',
+                        help="list of partial kermas (default=[302, 303, 304, 318, 402, 442, 443, 444, 445, 446, 447])")
+#    parser.add_argument('--qa',
+#                        default=[],
+#                        nargs='+',
+#                        help="MT number and associated user Q-value (default=None).")
+    parser.add_argument('--err',
+                        type=float,
+                        default=argparse.SUPPRESS,
+                        help="fractional tolerance for RECONR and BROADR (default=0.001)")
+    parser.add_argument('--free-gas',
+                        default=argparse.SUPPRESS,
+                        action="store_true",
+                        help="compute thermal cross section for free-gas scatterer (THERMR)")
+    parser.add_argument('--ptable',
+                        default=argparse.SUPPRESS,
+                        action="store_true",
+                        help="compute probability tables (PURR)")
+    parser.add_argument('--gaspr',
+                        default=argparse.SUPPRESS,
+                        action="store_true",
+                        help="compute gas-production cross sections (GASPR)")
+    parser.add_argument('--ign',
+                        default=argparse.SUPPRESS,
+                        help='''neutron group structure option for GROUPR
+ - file : read from file
+ - 2 : csewg 239-group structure [default]
+ - 3 : lanl 30-group structure
+ - 4 : anl 27-group structure
+ - 5 : rrd 50-group structure
+ - 6 : gam-i 68-group structure
+ - 7 : gam-ii 100-group structure
+ - 8 : laser-thermos 35-group structure
+ - 9 : epri-cpm 69-group structure
+ - 10 : lanl 187-group structure
+ - 11 : lanl 70-group structure
+ - 12 : sand-ii 620-group structure
+ - 13 : lanl 80-group structure
+ - 14 : eurlib 100-group structure
+ - 15 : sand-iia 640-group structure
+ - 16 : vitamin-e 174-group structure
+ - 17 : vitamin-j 175-group structure
+ - 19 : ecco 33-group structure
+ - 20 : ecco 1968-group structure
+ - 21 : tripoli 315-group structure
+ - 22 : xmas lwpc 172-group structure
+ - 23 : vit-j lwpc 175-group structure
+predefined group structures:
+ - scale_238''')
+    parser.add_argument('--iwt',
+                        default=argparse.SUPPRESS,
+                        help='''Weight function option for GROUPR
+ - file : read from file
+ - 2 : constant
+ - 3 : 1/e
+ - 5 : epri-cell lwr
+ - 6 : (thermal) -- (1/e) -- (fission + fusion)
+ - 7 : same with t-dep thermal part
+ - 8 : thermal--1/e--fast reactor--fission + fusion
+ - 9 : claw weight function
+ - 10 : claw with t-dependent thermal part
+ - 11 : vitamin-e weight function (ornl-5505)
+ - 12 : vit-e with t-dep thermal part
+predefined functions:
+ - jaea_fns_175
+''')
+    parser.add_argument('--igne',
+                        default=argparse.SUPPRESS,
+                        help="neutron group structure option for ERRORR (same as --ign)")
+    parser.add_argument('--iwte',
+                        default=argparse.SUPPRESS,
+                        help="weight function option for ERRORR (same as --iwt)")
+    parser.add_argument('--suffixes',
+                        type=str,
+                        default=argparse.SUPPRESS,
+                        nargs='+',
+                        metavar=".XX",
+                        help="suffixes for ACE files, as many as temperature values (default = None).")
+    parser.add_argument("-V","--verbose",
+                        type=int,
+                        default=argparse.SUPPRESS,
+                        help="set verbosity level (default = 1)")
+    parser.add_argument("-v",
+                        '--version',
+                        action='version',
+                        version='%(prog)s 1.0',
+                        help="")
+    return parser.parse_args(iargs)
+
+def mat_from_endf(tape):
+    """Extract MAT number from file. Take the first occurence for MF1/MT451.
+    """
+    for line in open(tape).readlines():
+        if line[70:72].strip() == "1" and line[72:75].strip() == "451":
+            return int(line[66:70])
+    sys.exit("MAT number not found")
 
 sab = pd.DataFrame.from_records([[48,9237,1,1,241,'uuo2'],
                                   [42,125,0,8,221,'tol'],
@@ -146,21 +342,14 @@ class Njoy:
         self.IPRINT = 1  # by default set verbosity to max
         self.PLOT = False
         # modules
-        self.RECONR = True
-        self.BROADR = False
-        self.UNRESR = False
-        self.THERMR = False
-        self.HEATR = False
-        self.GASPR = False
-        self.PURR = False
-        self.ACER = False
+        self.gaspr = False
         # RECONR/BROADR default options
         self.err = 0.001
         self.THNMAX = 1E6
         # PURR/UNRESR default options
-        self.PTABLE = False
+        self.ptable = False
         # THERMR default options
-        self.FREE_GAS = False
+        self.free_gas = False
         self.IIN = 1
         self.ICOH = 1
         self.IFORM = 0
@@ -187,8 +376,7 @@ class Njoy:
         # HEATR default options
         self.QA = []
         self.LOCAL = 0
-        for k,v in kwargs.items():
-            setattr(self, k.upper(), v)
+        for k,v in kwargs.items(): setattr(self, k, v)
         if not hasattr(self, "exe"): self.exe = "njoy2016"
 
     @property
@@ -214,170 +402,168 @@ class Njoy:
         self._exe = _exe
 
     @property
-    def TEMPS(self):
-        if not hasattr(self, "_temps"):
-            logging.error("'{}' object has no attribute '{}'".format(self.__class__.__name__, "TEMPS"))
-            sys.exit()
-        return self._temps
+    def wdir(self):
+        if hasattr(self, "_wdir"):
+            return self._wdir
+        else:
+            return os.getcwd()
+    
+    @wdir.setter
+    def wdir(self, wdir):
+        self._wdir = wdir
 
-    @TEMPS.setter
-    def TEMPS(self, temps):
+    @property
+    def temps(self):
+        if hasattr(self, "_temps"):
+            return self._temps
+        else:
+            return [0]
+
+    @temps.setter
+    def temps(self, temps):
         """
         Ensures that the temperatures are given correctly.
         """
         if not isinstance(temps, list):
-            logging.error("{} must be a list".format("TEMPS"))
-            sys.exit()
+            raise TypeError("{} must be a list".format("temps"))
         if len(temps)> 10:
-            logging.error("cannot have more than 10 temperatures")
-            sys.exit()
+            raise ValueError("cannot have more than 10 temperatures")
         self._temps = temps
 
     @property
-    def SIG0(self):
-        if not hasattr(self, "_sig0"):
-            logging.error("'{}' object has no attribute '{}'".format(self.__class__.__name__, "SIG0"))
-            sys.exit()
-        return self._sig0
+    def sig0(self):
+        if hasattr(self, "_sig0"):
+            return self._sig0
+        else:
+            return [1e10]
 
-    @SIG0.setter
-    def SIG0(self, sig0):
+    @sig0.setter
+    def sig0(self, sig0):
         """
         Ensures that the dilutions are given correctly.
         """
         if not isinstance(sig0, list):
-            logging.error("{} must be a list".format("SIG0"))
-            sys.exit()
+            raise TypeError("{} must be a list".format("sig0"))
         self._sig0 = sig0
 
     @property
-    def SUFFIXES(self):
-        if not hasattr(self, "_suffixes"):
-            logging.error("'{}' object has no attribute '{}'".format(self.__class__.__name__, "SUFFIXES"))
-            sys.exit()
-        if len(self._suffixes) != len(self.TEMPS):
-            logging.error("SUFFIXES must have as many items as TEMPS")
-            sys.exit()
-        return self._suffixes
+    def suffixes(self):
+        if hasattr(self, "_suffixes"):
+            suffixes = self._suffixes
+        else:
+            suffixes = [".00"]
+        if len(suffixes) != len(self.temps):
+            raise ValueError("'suffixes' must have as many items as 'temps'")
+        return suffixes
 
-    @SUFFIXES.setter
-    def SUFFIXES(self, suffixes):
+    @suffixes.setter
+    def suffixes(self, suffixes):
         """
         Ensures that the suffixes are as many as the temperature values.
         """
-        if not isinstance(suffixes, list): raise TypeError("{} must be a list".format("SUFFIXES"))
+        if not isinstance(suffixes, list):
+            raise TypeError("{} must be a list".format("suffixes"))
         self._suffixes = suffixes
 
-    def _moder_input(self, tapein, tapeout, **kwargs):
-        text = """moder
-{} {}
-""".format(tapein, tapeout)
-        return text
+    @property
+    def kerma(self):
+        if hasattr(self, "_kerma"):
+            return self._kerma
+        else:
+            return [302, 303, 304, 318, 402, 442, 443, 444, 445, 446, 447]
 
-    def _reconr_input(self, endfin, pendfout, mat):
+    @kerma.setter
+    def kerma(self, kerma):
+        """
+        Ensures that the partial kerma are given correctly.
+        """
+        if not isinstance(kerma, list):
+            raise TypeError("{} must be a list".format("temps"))
+        self._temps = kerma
+
+    @staticmethod
+    def _moder_input(tapein, tapeout, **kwargs):
+        text = ["moder"]
+        text.append("{} {} /".format(tapein, tapeout))
+        return "\n".join(text) + "\n"
+
+    @staticmethod
+    def _reconr_input(endfin, pendfout, mat, err=0.001, errmax=0.01, **kwargs):
         text = ["reconr"]
         text.append("{} {} /".format(endfin, pendfout))
-        text.append(" /")
-        text.append("{} 1 0 /".format(mat))
-        text.append("{} 0. {} /".format(self.err, self.errmax))
-        text.append(" /")
+        text.append("' '/")
+        text.append("{} 0 0 /".format(mat))
+        text.append("{} 0. {} /".format(err, errmax))
         text.append("0/")
         return "\n".join(text) + "\n"
 
-    @is_allocated("MAT")
-    def _broadr_input(self, endfin, pendfin, pendfout, **fileOptions):
-        kwargs = dict(dict(vars(self), TEMPS=self.TEMPS), **fileOptions)
+    @staticmethod
+    def _broadr_input(endfin, pendfin, pendfout, mat, temps, err=0.001, **kwargs):
         kwargs.update({"ENDFIN" : endfin, "PENDFIN" : pendfin, "PENDFOUT" : pendfout})
-        kwargs["NTEMPS"] = len(kwargs["TEMPS"])
-        kwargs["TEXTTEMPS"] = " ".join(["%E"%tmp for tmp in kwargs["TEMPS"]])
-        text = """broadr
-%(ENDFIN)d %(PENDFIN)d %(PENDFOUT)d
-%(MAT)d %(NTEMPS)d 0 0 0./
-%(ERR)E / %(THNMAX)E %(ERR)E/
-%(TEXTTEMPS)s/
-0/
-""" % kwargs
-        return text
+        text = ["broadr"]
+        text += ["{} {} {} /".format(endfin, pendfin, pendfout)]
+        text += ["{} {} 0 0 0. /".format(mat, len(temps))]
+        text += ["{} /".format(err)]
+        text += [" ".join(["{}".format(tmp) for tmp in temps])]
+        text += ["0 /"]
+        return "\n".join(text) + "\n"
 
-    @is_allocated("MAT")
-    def _thermr_input(self, endfin, pendfin, pendfout, **fileOptions):
-        kwargs = dict(dict(vars(self), TEMPS=self.TEMPS), **fileOptions)
-        kwargs.update({"ENDFIN" : endfin, "PENDFIN" : pendfin, "PENDFOUT" : pendfout})
-        kwargs["NTEMPS"] = len(kwargs["TEMPS"])
-        kwargs["TEXTTEMPS"] = " ".join(["%E"%tmp for tmp in kwargs["TEMPS"]])
-        text = """thermr
-%(ENDFIN)d %(PENDFIN)d %(PENDFOUT)d
-0 %(MAT)d 20 %(NTEMPS)d %(IIN)d %(ICOH)d %(IFORM)d %(NATOM)d 221 %(IPRINT)d
-%(TEXTTEMPS)s/
-0.001 4.0
-""" % kwargs
-        return text
+    @staticmethod
+    def _thermr_input(endfin, pendfin, pendfout, mat, temps, iin=1, ico=1,
+                      iform=0, natom=1, iprint=1, **kwargs):
+        text = ["thermr"]
+        text += ["{} {} {} /".format(endfin, pendfin, pendfout)]
+        text += ["0 {} 20 {} {} {} {} {} 221 {}".format(mat, len(temps), iin, ico, iform, natom, iprint)]
+        text += [" ".join(["{}".format(tmp) for tmp in temps])]
+        text += ["0.001 4.0/"]
+        return "\n".join(text) + "\n"
 
-    @is_allocated("MAT")
-    def _purr_input(self, endfin, pendfin, pendfout, **fileOptions):
-        kwargs = dict(dict(vars(self), TEMPS=self.TEMPS), **fileOptions)
-        kwargs.update({"ENDFIN" : endfin, "PENDFIN" : pendfin, "PENDFOUT" : pendfout})
-        if "SIG0" not in kwargs: kwargs["SIG0"] = [1E10]
-        kwargs["NSIG0"] = len(kwargs["SIG0"])
-        kwargs["TEXTSIG0"] = " ".join(["%E"%dil for dil in kwargs["SIG0"]])
-        kwargs["NTEMPS"] = len(kwargs["TEMPS"])
-        kwargs["TEXTTEMPS"] = " ".join(["%E"%tmp for tmp in kwargs["TEMPS"]])
-        text = """purr
-%(ENDFIN)d %(PENDFIN)d %(PENDFOUT)d
-%(MAT)d %(NTEMPS)d %(NSIG0)d 20 32/
-%(TEXTTEMPS)s/
-%(TEXTSIG0)s/
-0/
-""" % kwargs
-        return text
+    @staticmethod
+    def _purr_input(endfin, pendfin, pendfout, mat, temps, sig0, **kwargs):
+        text = ["purr"]
+        text += ["{} {} {} /".format(endfin, pendfin, pendfout)]
+        text += ["{} {} {} 20 32 /".format(mat, len(temps), len(sig0))]
+        text += [" ".join(map(str, temps))]
+        text += [" ".join(map("{:E}".format, sig0))]
+        text += ["0 /"]
+        return "\n".join(text) + "\n"
 
-    def _gaspr_input(self, endfin, pendfin, pendfout, **fileOptions):
-        kwargs = dict(vars(self), **fileOptions)
-        kwargs.update({"ENDFIN" : endfin, "PENDFIN" : pendfin, "PENDFOUT" : pendfout})
-        text = """gaspr
-%(ENDFIN)d %(PENDFIN)d %(PENDFOUT)d /
-""" % kwargs
-        return text
+    @staticmethod
+    def _gaspr_input(endfin, pendfin, pendfout, **kwargs):
+        text = ["purr"]
+        text += ["{} {} {} /".format(endfin, pendfin, pendfout)]
+        return "\n".join(text) + "\n"
 
-    @is_allocated("MAT")
-    def _unresr_input(self, endfin, pendfin, pendfout, **fileOptions):
-        kwargs = dict(dict(vars(self), TEMPS=self.TEMPS, SIG0=self.SIG0), **fileOptions)
-        kwargs.update({"ENDFIN" : endfin, "PENDFIN" : pendfin, "PENDFOUT" : pendfout})
-        kwargs["NSIG0"] = len(kwargs["SIG0"])
-        kwargs["TEXTSIG0"] = " ".join(["%E"%dil for dil in kwargs["SIG0"]])
-        kwargs["NTEMPS"] = len(kwargs["TEMPS"])
-        kwargs["TEXTTEMPS"] = " ".join(["%E"%tmp for tmp in kwargs["TEMPS"]])
-        text = """unresr
-%(ENDFIN)d %(PENDFIN)d %(PENDFOUT)d
-%(MAT)d %(NTEMPS)d %(NSIG0)d 1/
-%(TEXTTEMPS)s/
-%(TEXTSIG0)s/
-0/
-""" % kwargs
-        return text
+    @staticmethod
+    def _unresr_input(endfin, pendfin, pendfout, mat, temps, sig0, **kwargs):
+        text = ["unresr"]
+        text += ["{} {} {} /".format(endfin, pendfin, pendfout)]
+        text += ["{} {} {} 1 /".format(mat, len(temps), len(sig0))]
+        text += [" ".join(map(str, temps))]
+        text += [" ".join(map("{:E}".format, sig0))]
+        text += ["0 /"]
+        return "\n".join(text) + "\n"
 
-    @is_allocated("MAT", "TMP", "SUFF")
-    def _acer_input(self, nendf, npendf, nace, ndir, **fileOptions):
-        kwargs = dict(dict(vars(self), TEMPS=self.TEMPS, SUFFIXES=self.SUFFIXES), **fileOptions)
-        kwargs.update({"NENDF" : nendf, "NPENDF" : npendf, "NACE" : nace, "NDIR" : ndir})
-        text = """acer
-%(NENDF)d %(NPENDF)d 0 %(NACE)d %(NDIR)d /
-%(IOPT)d %(IPRINT)d %(ITYPE)d %(SUFF)s 0/
-'%(HK)s'/
-%(MAT)d  %(TMP)E /
-%(NEWFOR)d %(IOPP)d/
-0.001/
-""" % kwargs
+    @staticmethod
+    def _acer_input(nendf, npendf, nace, ndir, mat, temp, suff, iopt=1,
+                    iprint=1, itype=1, descr="", newfor=1, iopp=1, **kwargs):
+        text = ["acer"]
+        text += ["{} {} 0 {} {} /".format(nendf, npendf, nace, ndir)]
+        text += ["{} {} {} {} 0 /".format(iopt, iprint, itype, suff)]
+        text += [descr + "/"]
+        text += ["{} {} /".format(mat, temp)]
+        text += ["{} {} /".format(newfor, iopp)]
+        text += ["0.001 /"]
 #        if kwargs["VERBOSE"] >= 2:
 #            text += """acer / Check ACE files
 #0 %(NACE) 0 0 0 /
 #7 %(IPRINT)d 1 -1/
 #/
 #"""
-        return text
+        return "\n".join(text) + "\n"
 
-    @is_allocated("MAT")
-    def _heatr_input(self, endfin, pendfin, pendfout, **fileOptions):
+    @staticmethod
+    def _heatr_input(endfin, pendfin, pendfout, **kwargs):
         kwargs = dict(dict(vars(self), TEMPS=self.TEMPS), **fileOptions)
         text = ""
         npks = len(kwargs["KERMA"])
@@ -539,69 +725,66 @@ errorr
         return text
 
 
-#    @is_allocated("TAPE", "TAG", "FILENAME")
-    def get_pendf(self, tape, mat, pendftape=None, **fileOptions):
-        fname = os.path.split(tape)[0]
-        mydir = os.path.join(self.folder, fname)
+    def get_pendf(self, tape, mat=None, pendftape=None, tag=None, 
+                  **fileOptions):
+        """ Run NJOY sequence to produce a PENDF file.
+        """
+        if mat is None: mat = mat_from_endf(tape)
+        fname = os.path.split(tape)[1]
+        if tag is None: tag = fname
+        mydir = os.path.join(self.wdir, fname)
         os.makedirs(mydir, exist_ok=True)
-
+        DfOutputs = OutputFiles()
+        # Build njoy input text
         utils.force_symlink(tape, os.path.join(mydir, "tape20"))
-        text = self._moder_input(20, -21, **fileOptions)
-
-        if pendftape:
-            utils.force_symlink(pendftape, os.path.join(mydir, "tape30"))
-            text += self._moder_input(30, -22, **fileOptions)
+        text = self._moder_input(20, -21)
+        if pendftape is None:
+            text += self._reconr_input(-21, -22, mat, self.err)
         else:
-            text += self._reconr_input(-21, -22, mat)
+            utils.force_symlink(pendftape, os.path.join(mydir, "tape30"))
+            text += self._moder_input(30, -22)
         e = -21; p = -22
-        pdb.set_trace()
-        if hasattr(self, "_temps"): self.BROADR = True
-        if self.BROADR:
-            text += self._broadr_input(e, p, -23, **fileOptions)
+        if hasattr(self, "_temps"):
+            text += self._broadr_input(e, p, -23, mat, self.temps, self.err)
             p = -23
-        if self.FREE_GAS: self.THERMR = True
-        if self.THERMR:
-            text += self._thermr_input(0, p, -24, **fileOptions)
+        if self.free_gas:
+            text += self._thermr_input(0, p, -24, mat, self.temps)
             p = -24
-        if hasattr(self, "_sig0"): self.UNRESR = True
-        if self.UNRESR:
-            text += self._unresr_input(e, p, -25, **fileOptions)
+        if hasattr(self, "_sig0"):
+            text += self._unresr_input(e, p, -25, mat, self.temps, self.sig0)
             p = -25
-        if self.PTABLE > 0: self.PURR = True
-        if self.PURR:
-            text += self._purr_input(e, p, -26, **fileOptions)
+        if self.ptable:
+            text += self._purr_input(e, p, -26, mat, self.temps, self.sig0)
             p = -26
-        if hasattr(self, "KERMA"): self.HEATR = True
-        if self.HEATR:
+        if hasattr(self, "_kerma"):
             text += self._heatr_input(e, p, -27, **fileOptions)
             p = -27
-        if self.GASPR:
-            text += self._gaspr_input(e, p, -28, **fileOptions)
+        if self.gaspr:
+            text += self._gaspr_input(e, p, -28)
             p = -28
-        text += self._moder_input(p, 29, **fileOptions)
+        text += self._moder_input(p, 29)
         text += "stop"
-
-#        pdb.set_trace()
-        DfOutputs = OutputFiles()
-        inputfile = os.path.join(mydir, "input_pendf.{}".format(fileOptions["TAG"]))
+        # Run NJOY
+        inputfile = os.path.join(mydir, "input_pendf.{}".format(tag))
         DfOutputs = DfOutputs.append({"id" : "input_pendf", "format" : "TEXT", "file" : inputfile}, ignore_index=True)
         with open(inputfile,'w') as f: f.write(text)
-        print(" --- run pendf for {} ---".format(fileOptions["TAG"]))
-        returncode, stdout, stderr = run_process("{} < {}".format(self.exe, inputfile), cwd=mydir, verbose=True)
-
+        returncode, stdout, stderr = utils.run_process(
+                "{} < {}".format(self.exe, inputfile),
+                cwd=mydir,
+                verbose=True,
+                )
+        # Process NJOY outputs
         oldfile = os.path.join(mydir, "tape29")
-        newfile = os.path.join(mydir, "{}.pendf".format(fileOptions["TAG"]))
-        if os.path.isfile(oldfile):
-            if os.path.getsize(oldfile) > 0:
-                shutil.move(oldfile, newfile)
-                DfOutputs = DfOutputs.append({"id" : "pendf", "format" : "ENDF", "file" : newfile}, ignore_index=True)
-
+        newfile = os.path.join(mydir, "{}.pendf".format(tag))
+        if (os.path.isfile(oldfile) and os.path.getsize(oldfile) > 0):
+            shutil.move(oldfile, newfile)
+            DfOutputs = DfOutputs.append({"id" : "pendf", "format" : "ENDF", "file" : newfile}, ignore_index=True)
         oldfile = os.path.join(mydir, "output")
-        newfile = os.path.join(mydir, "output_pendf.{}".format(fileOptions["TAG"]))
-        shutil.move(oldfile, newfile)
-        DfOutputs = DfOutputs.append({"id" : "output_pendf", "format" : "TEXT", "file" : newfile}, ignore_index=True)
-        DfMessages = NjoyOutput.from_file(newfile).get_messages()
-
+        newfile = os.path.join(mydir, "output_pendf.{}".format(tag))
+        if (os.path.isfile(oldfile) and os.path.getsize(oldfile) > 0):
+            shutil.move(oldfile, newfile)
+            DfOutputs = DfOutputs.append({"id" : "output_pendf", "format" : "TEXT", "file" : newfile}, ignore_index=True)
+            DfMessages = NjoyOutput.from_file(newfile).get_messages()
         for filename in os.listdir(mydir):
             if filename[:4] == 'tape': os.remove(os.path.join(mydir, filename))
         return DfOutputs, DfMessages
@@ -734,44 +917,54 @@ errorr
         return DfOutputs, DfMessages
 
 
-    @is_allocated("FILENAME", "TAPE", "PENDFTAPE", "TAG", "ZA", "LISO")
-    def get_ace(self, **fileOptions):
-        mydir = os.path.join(self.folder, fileOptions["FILENAME"])
+    def get_ace(self, tape, mat=None, pendftape=None, tag=None, 
+                **fileOptions):
+        """ Run the NJOY sequence to produce a ACE file.
+        """
+        if mat is None: mat = mat_from_endf(tape)
+        fname = os.path.split(tape)[1]
+        if tag is None: tag = fname
+        mydir = os.path.join(self.wdir, fname)
         os.makedirs(mydir, exist_ok=True)
-
-        utils.force_symlink(fileOptions["TAPE"], os.path.join(mydir, "tape20"))
-        text = self._moder_input(20, -21, **fileOptions)
-
-        utils.force_symlink(fileOptions["PENDFTAPE"], os.path.join(mydir, "tape29"))
-        text += self._moder_input(29, -25, **fileOptions)
-
+        if pendftape is None:
+            dfout, dferr = self.get_pendf(tape, mat=mat, pendftape=pendftape, tag=tag)
+            pendftape = dfout.query("id==\"pendf\"").file.iloc[0]
+        else:
+            dfout = OutputFiles()
+            dferr = NjoyMessages()
+        # Build njoy input text
+        utils.force_symlink(tape, os.path.join(mydir, "tape20"))
+        text = self._moder_input(20, -21)
+        utils.force_symlink(pendftape, os.path.join(mydir, "tape29"))
+        text += self._moder_input(29, -25)
         aces = []; xsdirs = []
         e = -21; p = -25; a = 40; x = 50
-        for tmp,suff in zip(self.TEMPS, self.SUFFIXES):
-            text += self._acer_input(e, p, a, x, TMP=tmp, SUFF=suff, **fileOptions)
+        for tmp,suff in zip(self.temps, self.suffixes):
+            text += self._acer_input(e, p, a, x, mat, tmp, suff)
             aces.append(a); xsdirs.append(x)
             a += 1; x += 1
         text += "stop"
-
-        DfOutputs = OutputFiles()
-        inputfile = os.path.join(mydir, "input_acer.{}".format(fileOptions["TAG"]))
-        DfOutputs = DfOutputs.append({"id" : "input_acer", "format" : "TEXT", "file" : inputfile}, ignore_index=True)
+        # Run NJOY and process outputs
+        inputfile = os.path.join(mydir, "input_acer.{}".format(tag))
+        dfout = OutputFiles()
+        dfout = dfout.append({"id" : "input_acer", "format" : "ACE", "file" : inputfile}, ignore_index=True)
         with open(inputfile,'w') as f: f.write(text)
-        print(" --- run acer for {} ---".format(fileOptions["TAG"]))
-        returncode, stdout, stderr = run_process("{} < {}".format(self.exe, inputfile), cwd=mydir)
-
-        newfile = os.path.join(mydir, "{}.ace".format(fileOptions["TAG"]))
+        returncode, stdout, stderr = utils.run_process(
+                "{} < {}".format(self.exe, inputfile),
+                cwd=mydir,
+                verbose=True,
+                )
+        sys.exit()
+        # Process NJOY outputs
+        newfile = os.path.join(mydir, "{}.ace".format(tag))
         if os.path.isfile(newfile): os.remove(newfile)
-        with open(newfile, "a") as f:
-            for a in aces:
-                oldfile = os.path.join(mydir, "tape{}".format(a))
-                if not os.path.isfile(oldfile): continue
-                with open(oldfile) as g: f.write(g.read())
-        if os.path.isfile(newfile):
-            if os.path.getsize(newfile) > 0:
-                DfOutputs = DfOutputs.append({"id" : "ace", "format" : "ACE", "file" : newfile}, ignore_index=True)
-
-        newfile = os.path.join(mydir, "{}.xsdir".format(fileOptions["TAG"]))
+        for a in aces:
+            oldfile = os.path.join(mydir, "tape{}".format(a))
+            if not os.path.isfile(oldfile): continue
+            with open(newfile, "a") as f, open(oldfile) as g: f.write(g.read())
+        if (os.path.isfile(newfile) and os.path.getsize(newfile) > 0):
+                dfout = dfout.append({"id" : "ace", "format" : "ACE", "file" : newfile}, ignore_index=True)
+        newfile = os.path.join(mydir, "{}.xsdir".format(tag))
         if os.path.isfile(newfile): os.remove(newfile)
         with open(newfile, "a") as f:
             lines = []
@@ -780,24 +973,22 @@ errorr
                 if not os.path.isfile(oldfile): continue
                 with open(oldfile) as g:
                     xargs = g.read().split()
-                    xargs[0] = ".".join([str(int(fileOptions['ZA'] + 300*fileOptions["LISO"])), xargs[0].split('.')[1]])
-                    xargs[2] = "{}.ace".format(fileOptions["TAG"])
+#                    xargs[0] = ".".join([str(int(fileOptions['ZA'] + 300*fileOptions["LISO"])), xargs[0].split('.')[1]])
+                    xargs[2] = "{}.ace".format(tag)
                     xargs[3] = "0"
                     lines.append(" ".join(xargs))
             f.write("\n".join(lines))
-        if os.path.isfile(newfile):
-            if os.path.getsize(newfile) > 0:
-                DfOutputs = DfOutputs.append({"id" : "xsdir", "format" : "TEXT", "file" : newfile}, ignore_index=True)
-
+        if (os.path.isfile(newfile) and os.path.getsize(newfile) > 0):
+            dfout = dfout.append({"id" : "xsdir", "format" : "TEXT", "file" : newfile}, ignore_index=True)
         oldfile = os.path.join(mydir, "output")
-        newfile = os.path.join(mydir, "output_acer.{}".format(fileOptions["TAG"]))
-        shutil.move(oldfile, newfile)
-        DfOutputs = DfOutputs.append({"id" : "output_acer", "format" : "TEXT", "file" : newfile}, ignore_index=True)
-        DfMessages = NjoyOutput.from_file(newfile).get_messages()
-
+        newfile = os.path.join(mydir, "output_acer.{}".format(tag))
+        if (os.path.isfile(oldfile) and os.path.getsize(oldfile) > 0):
+            shutil.move(oldfile, newfile)
+            dfout = dfout.append({"id" : "output_acer", "format" : "TEXT", "file" : newfile}, ignore_index=True)
+            dferr = NjoyOutput.from_file(newfile).get_messages()
         for filename in os.listdir(mydir):
             if filename[:4] == 'tape': os.remove(os.path.join(mydir, filename))
-        return DfOutputs, DfMessages
+        return dfout, dferr
 
 
 
