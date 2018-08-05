@@ -291,7 +291,180 @@ class NjoyOutput(pd.DataFrame):
             found += [ (item.module, *x) for x in re.findall(self.twoline_err, item.content)]
         return NjoyMessages(found)
 
+		
+def _set_njoyexe(self, njoyexe):
+    """Mimic the behavior of the UNIX 'which' command to find the njoy executable.
+    """
+    def is_exe(fpath):
+        return os.path.isfile(fpath) and os.access(fpath, os.X_OK)
+    fpath, fname = os.path.split(program)
+    if fpath:
+        if is_exe(program):
+            return program
+    else:
+        for path in os.environ["PATH"].split(os.pathsep):
+            exe_file = os.path.join(path, program)
+            if is_exe(exe_file):
+                return exe_file
+	raise NotImplementedError("Not a valid NJOY-2016 executable: '{}'".format(_exe))
 
+	
+def _moder_input(nin, nout, **kwargs):
+	text = ["moder"]
+	text.append("{} {} /".format(nin, nout))
+	return "\n".join(text) + "\n"
+
+
+def _reconr_input(nendf, npendf, mat, err=0.001, errmax=None, **kwargs):
+	if errmax is None: errmax = err*10
+	text = ["reconr"]
+	text.append("{} {} /".format(nendf, npendf))
+	text.append("' '/")
+	text.append("{} 0 0 /".format(mat))
+	text.append("{} 0. {} /".format(err, errmax))
+	text.append("0/")
+	return "\n".join(text) + "\n"
+
+def _broadr_input(nendf, npendf, nout, mat, temps, err=0.001, **kwargs):
+	kwargs.update({"ENDFIN" : endfin, "PENDFIN" : pendfin, "PENDFOUT" : pendfout})
+	text = ["broadr"]
+	text += ["{} {} {} /".format(endfin, pendfin, pendfout)]
+	text += ["{} {} 0 0 0. /".format(mat, len(temps))]
+	text += ["{} /".format(err)]
+	text += [" ".join(["{}".format(tmp) for tmp in temps])]
+	text += ["0 /"]
+	return "\n".join(text) + "\n"
+
+def _thermr_input(endfin, pendfin, pendfout, mat, temps, iin=1, ico=1,
+				  iform=0, natom=1, iprint=1, **kwargs):
+	text = ["thermr"]
+	text += ["{} {} {} /".format(endfin, pendfin, pendfout)]
+	text += ["0 {} 20 {} {} {} {} {} 221 {}".format(mat, len(temps), iin, ico, iform, natom, iprint)]
+	text += [" ".join(["{}".format(tmp) for tmp in temps])]
+	text += ["0.001 4.0/"]
+	return "\n".join(text) + "\n"
+
+def _purr_input(endfin, pendfin, pendfout, mat, temps, sig0, **kwargs):
+	text = ["purr"]
+	text += ["{} {} {} /".format(endfin, pendfin, pendfout)]
+	text += ["{} {} {} 20 32 /".format(mat, len(temps), len(sig0))]
+	text += [" ".join(map(str, temps))]
+	text += [" ".join(map("{:E}".format, sig0))]
+	text += ["0 /"]
+	return "\n".join(text) + "\n"
+
+def _gaspr_input(nendf, npendf, nout, **kwargs):
+	text = ["purr"]
+	text += ["{} {} {} /".format(nendf, npendf, nout)]
+	return "\n".join(text) + "\n"
+
+def _unresr_input(endfin, pendfin, pendfout, mat, temps, sig0, **kwargs):
+	text = ["unresr"]
+	text += ["{} {} {} /".format(endfin, pendfin, pendfout)]
+	text += ["{} {} {} 1 /".format(mat, len(temps), len(sig0))]
+	text += [" ".join(map(str, temps))]
+	text += [" ".join(map("{:E}".format, sig0))]
+	text += ["0 /"]
+	return "\n".join(text) + "\n"
+
+def _acer_input(nendf, npendf, nace, ndir, mat, temp, suff, iopt=1,
+				iprint=1, itype=1, descr="", newfor=1, iopp=1, **kwargs):
+	text = ["acer"]
+	text += ["{} {} 0 {} {} /".format(nendf, npendf, nace, ndir)]
+	text += ["{} {} {} {} 0 /".format(iopt, iprint, itype, suff)]
+	text += [descr + "/"]
+	text += ["{} {} /".format(mat, temp)]
+	text += ["{} {} /".format(newfor, iopp)]
+	text += ["0.001 /"]
+#        if kwargs["VERBOSE"] >= 2:
+#            text += """acer / Check ACE files
+#0 %(NACE) 0 0 0 /
+#7 %(IPRINT)d 1 -1/
+#/
+#"""
+	return "\n".join(text) + "\n"
+
+def _heatr_input(nendf, npendf, nout, mat, temps, pks, **kwargs):
+	text = ["heatr"]
+	text += ["{} {} {} 0 /".format(nendf, npendf, nout)]
+	text += ["{} {} 0 0 0 /".format(mat, len(pks))]
+	text += [" ".join(map(str, pks))]
+	return "\n".join(text) + "\n"
+
+	
+def get_pendf(tape, mat=None, pendftape=None, tag=None,
+              err=0.001, errmax=None,
+			  temperatures=[293.6], dilutions = [1E10],
+			  partial_kermas = [302, 303, 304, 318, 402, 442, 443, 444, 445, 446, 447]
+              broadr=True, thermr=True, purr=True,
+			  unresr=False, heatr=False, gaspr=False
+			  **kwargs):
+	""" Run NJOY sequence to produce a PENDF file.
+	"""
+	if mat is None: mat = mat_from_endf(tape)
+	fname = os.path.split(tape)[1]
+	if tag is None: tag = fname
+	mydir = os.path.join(self.wdir, fname)
+	os.makedirs(mydir, exist_ok=True)
+	# Build njoy input text
+	utils.force_symlink(tape, os.path.join(mydir, "tape20"))
+	text = _moder_input(20, -21)
+	e, p = 21, 22
+	text += _reconr_input(-e, -p, mat, self.err)
+	if broadr:
+		o = p + 1
+		text += _broadr_input(-e, -p, -o, mat, temperatures, err)
+		p = o
+	if thermr:
+		o = p + 1 
+		text += _thermr_input(0, -p, -o, mat, temperatures)
+		p = o
+	if unresr:
+		o = p + 1
+		text += _unresr_input(-e, -p, -o, mat, temperatures, dilutions)
+		p = o
+	if purr:
+		o = p + 1
+		text += _purr_input(-e, -p, -o, mat, temperatures, dilutions)
+		p = o
+	if heatr:
+		for i in range(0, len(partial_kermas), 7):
+			o = p + 1
+			text += _heatr_input(-e, -p, -o, temperatures, partial_kermas[i:i+7])
+			p = o
+	if self.gaspr:
+		o = p + 1
+		text += _gaspr_input(-e, -p, -o)
+		p = o
+	o = p + 1
+	text += self._moder_input(p, o)
+	text += "stop"
+	# Run NJOY
+	inputfile = os.path.join(mydir, "input_pendf.{}".format(tag))
+	DfOutputs = DfOutputs.append({"id" : "input_pendf", "format" : "TEXT", "file" : inputfile}, ignore_index=True)
+	with open(inputfile,'w') as f: f.write(text)
+	returncode, stdout, stderr = utils.run_process(
+			"{} < {}".format(self.exe, inputfile),
+			cwd=mydir,
+			verbose=True,
+			)
+	# Process NJOY outputs
+	oldfile = os.path.join(mydir, "tape29")
+	newfile = os.path.join(mydir, "{}.pendf".format(tag))
+	if (os.path.isfile(oldfile) and os.path.getsize(oldfile) > 0):
+		shutil.move(oldfile, newfile)
+		DfOutputs = DfOutputs.append({"id" : "pendf", "format" : "ENDF", "file" : newfile}, ignore_index=True)
+	oldfile = os.path.join(mydir, "output")
+	newfile = os.path.join(mydir, "output_pendf.{}".format(tag))
+	if (os.path.isfile(oldfile) and os.path.getsize(oldfile) > 0):
+		shutil.move(oldfile, newfile)
+		DfOutputs = DfOutputs.append({"id" : "output_pendf", "format" : "TEXT", "file" : newfile}, ignore_index=True)
+		DfMessages = NjoyOutput.from_file(newfile).get_messages()
+	for filename in os.listdir(mydir):
+		if filename[:4] == 'tape': os.remove(os.path.join(mydir, filename))
+	return DfOutputs, DfMessages
+
+		
 class Njoy:
     """ 
     """
